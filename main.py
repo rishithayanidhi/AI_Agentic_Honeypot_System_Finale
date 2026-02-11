@@ -37,11 +37,7 @@ logger = logging.getLogger(__name__)
 # Clean deployment - no database dependencies (v2.0)
 logger.info("="*60)
 logger.info("AI AGENTIC HONEYPOT SYSTEM STARTING")
-logger.info(f"Python version: {sys.version}")
 logger.info(f"LLM Provider: {settings.LLM_PROVIDER}")
-logger.info(f"Host: {settings.HOST}")
-logger.info(f"Port: {settings.PORT}")
-logger.info(f"API Key configured: {'Yes' if settings.API_KEY != 'CHANGE_ME_IN_PRODUCTION' else 'NO - PLEASE SET API_KEY!'}")
 logger.info("="*60)
 sys.stdout.flush()  # Force flush to Render
 
@@ -82,19 +78,6 @@ def verify_api_key(api_key: str = Security(api_key_header)):
 scam_detector = ScamDetector()
 ai_agent = AIAgent()
 intelligence_extractor = IntelligenceExtractor()
-
-logger.info("✅ All services initialized successfully")
-sys.stdout.flush()
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Log when app is ready to receive requests"""
-    logger.info("="*60)
-    logger.info("🚀 APPLICATION READY - Port is open and accepting requests")
-    logger.info(f"📡 Health check: http://{settings.HOST}:{settings.PORT}/health")
-    logger.info("="*60)
-    sys.stdout.flush()
 
 
 # Add validation error handler for better debugging
@@ -465,9 +448,7 @@ async def handle_message(
                         message_count=session.message_count
                     )
                 
-                # Generate response with timeout to avoid GUVI 30s timeout
-                # Use shorter timeout in FAST_MODE for instant fallback
-                timeout = 3.0 if settings.FAST_MODE else 20.0
+                # Generate response with 20s timeout to avoid GUVI 30s timeout
                 try:
                     agent_decision = await asyncio.wait_for(
                         asyncio.to_thread(
@@ -476,13 +457,12 @@ async def handle_message(
                             conversation_history=session.messages,
                             persona=session.persona,
                             scam_type=scam_type,
-                            extracted_intel=session.intelligence.model_dump(),
-                            session_id=session_id
+                            extracted_intel=session.intelligence.model_dump()
                         ),
-                        timeout=timeout
+                        timeout=20.0
                     )
                 except asyncio.TimeoutError:
-                    logger.warning(f"AI generation timed out after {timeout}s - using fast fallback")
+                    logger.warning("AI generation timed out after 20s - using fast fallback")
                     agent_decision = {
                         'response': "I see. Could you provide more details about this?",
                         'should_continue': True,

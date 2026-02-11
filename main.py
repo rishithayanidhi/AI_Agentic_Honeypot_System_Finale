@@ -448,7 +448,9 @@ async def handle_message(
                         message_count=session.message_count
                     )
                 
-                # Generate response with 20s timeout to avoid GUVI 30s timeout
+                # Generate response with timeout to avoid GUVI 30s timeout
+                # Use shorter timeout in FAST_MODE for instant fallback
+                timeout = 3.0 if settings.FAST_MODE else 20.0
                 try:
                     agent_decision = await asyncio.wait_for(
                         asyncio.to_thread(
@@ -457,12 +459,13 @@ async def handle_message(
                             conversation_history=session.messages,
                             persona=session.persona,
                             scam_type=scam_type,
-                            extracted_intel=session.intelligence.model_dump()
+                            extracted_intel=session.intelligence.model_dump(),
+                            session_id=session_id
                         ),
-                        timeout=20.0
+                        timeout=timeout
                     )
                 except asyncio.TimeoutError:
-                    logger.warning("AI generation timed out after 20s - using fast fallback")
+                    logger.warning(f"AI generation timed out after {timeout}s - using fast fallback")
                     agent_decision = {
                         'response': "I see. Could you provide more details about this?",
                         'should_continue': True,

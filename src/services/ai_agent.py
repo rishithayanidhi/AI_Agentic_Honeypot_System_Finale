@@ -7,6 +7,8 @@ import random
 import logging
 import json
 import re
+import time
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,17 @@ class AIAgent:
         self.gemini_key_index = 0  # Track current Gemini key
         self.gemini_clients = []  # Multiple Gemini clients
         
+        # Rate limiting and cooldown tracking
+        self.provider_cooldowns = {}  # Track when providers can be used again
+        self.model_cooldowns = {}  # Track per-model cooldowns
+        self.last_request_time = {}  # Track last request per provider
+        self.request_counts = {}  # Track requests per minute
+        self.min_request_interval = settings.MIN_REQUEST_INTERVAL  # Minimum seconds between requests
+        
+        # Response history tracking to avoid repetition
+        self.response_history = {}  # Track recent responses per session
+        self.max_history_size = 10  # Remember last 10 responses
+        
         # Initialize all available providers dynamically
         self._initialize_providers()
     
@@ -98,9 +111,99 @@ class AIAgent:
             logger.warning("AI Agent: No LLM providers available - will use fallback responses only")
         else:
             logger.info(f"✅ AI Agent: Available providers: {', '.join(self.available_providers)}")
+        
+        # Log FAST_MODE status
+        if settings.FAST_MODE:
+            logger.info("⚡ AI Agent: FAST_MODE enabled - bypassing throttling and cooldowns for instant responses")
+        else:
+            logger.info(f"🐢 AI Agent: Production mode - rate limiting enabled ({settings.MIN_REQUEST_INTERVAL}s between requests)")
+    
+    def _extract_retry_delay(self, error_msg: str) -> float:
+        """Extract retry delay from error message (e.g., 'Please retry in 18.360292146s')"""
+        try:
+            import re
+            match = re.search(r'retry in ([0-9.]+)s', error_msg)
+            if match:
+                delay = float(match.group(1))
+                logger.info(f"AI Agent: Extracted retry delay: {delay}s")
+                return delay
+            # Also check for retryDelay field
+            match = re.search(r'retryDelay["\']?:\s*["\']?([0-9.]+)s?["\']?', error_msg)
+            if match:
+                delay = float(match.group(1))
+                logger.info(f"AI Agent: Extracted retry delay from field: {delay}s")
+                return delay
+        except Exception as e:
+            logger.debug(f"AI Agent: Could not extract retry delay: {e}")
+        return settings.DEFAULT_RETRY_DELAY  # Default cooldown from config
+    
+    def _is_provider_in_cooldown(self, provider: str) -> bool:
+        """Check if provider is in cooldown period"""
+        # Skip cooldowns in FAST_MODE for testing/GUVI
+        if settings.FAST_MODE:
+            return False
+        
+        if provider in self.provider_cooldowns:
+            cooldown_until = self.provider_cooldowns[provider]
+            if datetime.now() < cooldown_until:
+                remaining = (cooldown_until - datetime.now()).total_seconds()
+                logger.debug(f"AI Agent: {provider} in cooldown for {remaining:.1f}s more")
+                return True
+            else:
+                # Cooldown expired, remove it
+                del self.provider_cooldowns[provider]
+        return False
+    
+    def _is_model_in_cooldown(self, model: str) -> bool:
+        """Check if specific model is in cooldown period"""
+        # Skip cooldowns in FAST_MODE for testing/GUVI
+        if settings.FAST_MODE:
+            return False
+        
+        if model in self.model_cooldowns:
+            cooldown_until = self.model_cooldowns[model]
+            if datetime.now() < cooldown_until:
+                remaining = (cooldown_until - datetime.now()).total_seconds()
+                logger.debug(f"AI Agent: Model {model} in cooldown for {remaining:.1f}s more")
+                return True
+            else:
+                del self.model_cooldowns[model]
+        return False
+    
+    def _set_cooldown(self, identifier: str, delay_seconds: float, is_model: bool = False):
+        """Set cooldown for provider or model"""
+        cooldown_until = datetime.now() + timedelta(seconds=delay_seconds)
+        if is_model:
+            self.model_cooldowns[identifier] = cooldown_until
+            logger.info(f"AI Agent: Model {identifier} cooldown set for {delay_seconds}s")
+        else:
+            self.provider_cooldowns[identifier] = cooldown_until
+            logger.info(f"AI Agent: Provider {identifier} cooldown set for {delay_seconds}s")
+    
+    def _throttle_request(self, provider: str):
+        """Enforce minimum time between requests to avoid rate limits"""
+        # Skip throttling in FAST_MODE for testing/GUVI
+        if settings.FAST_MODE:
+            logger.debug(f"AI Agent: FAST_MODE enabled - skipping throttle for {provider}")
+            return
+        
+        if provider in self.last_request_time:
+            elapsed = time.time() - self.last_request_time[provider]
+            if elapsed < self.min_request_interval:
+                sleep_time = self.min_request_interval - elapsed
+                logger.info(f"AI Agent: Throttling {provider} request, sleeping {sleep_time:.1f}s")
+                time.sleep(sleep_time)
+        self.last_request_time[provider] = time.time()
     
     def _call_llm(self, provider: str, prompt: str, temperature: float = 0.7) -> str:
         """Call LLM (Claude Haiku 4.5 or Gemini) with error handling - optimized for speed"""
+        # Check provider cooldown
+        if self._is_provider_in_cooldown(provider):
+            raise Exception(f"{provider} is in cooldown period")
+        
+        # Throttle request to avoid hitting rate limits
+        self._throttle_request(provider)
+        
         try:
             if provider == "anthropic":
                 # Claude Haiku 4.5 - Ultra fast and cost-effective
@@ -121,9 +224,10 @@ class AIAgent:
             elif provider == "gemini":
                 # Try all Gemini clients with rotation on quota errors
                 last_error = None
+                quota_exhausted = False  # Track if quota is globally exhausted
                 
-                # Prioritize Flash models for speed
-                gemini_models = [
+                # Prioritize Flash models for speed (filter out models in cooldown)
+                all_gemini_models = [
                     'models/gemini-2.5-flash',      # Fastest
                     'models/gemini-flash-latest',    # Fast fallback
                     'models/gemini-2.0-flash',       # Fast alternative
@@ -131,6 +235,18 @@ class AIAgent:
                     'models/gemini-2.5-pro',         # Quality fallback
                     'models/gemini-pro-latest'       # Last resort
                 ]
+                
+                # Filter out models in cooldown
+                gemini_models = [m for m in all_gemini_models if not self._is_model_in_cooldown(m)]
+                
+                # In FAST_MODE, only try first model for speed
+                if settings.FAST_MODE and gemini_models:
+                    gemini_models = gemini_models[:settings.FAST_MODE_MAX_RETRY_ATTEMPTS]
+                    logger.debug(f"AI Agent: FAST_MODE - limiting to {len(gemini_models)} model(s)")
+                
+                if not gemini_models:
+                    logger.warning("AI Agent: All Gemini models are in cooldown")
+                    raise Exception("All Gemini models in cooldown")
                 
                 # Try each Gemini client (rotating through API keys)
                 for client_attempt in range(len(self.gemini_clients)):
@@ -190,6 +306,18 @@ class AIAgent:
                             # Check if it's a quota error (429 or RESOURCE_EXHAUSTED)
                             if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower():
                                 logger.warning(f"AI Agent: Gemini model {model_name} failed: {model_error}")
+                                
+                                # Extract retry delay and set model cooldown
+                                retry_delay = self._extract_retry_delay(error_msg)
+                                self._set_cooldown(model_name, retry_delay, is_model=True)
+                                
+                                # Check if it's a daily quota exhaustion (0 limit)
+                                if "limit: 0" in error_msg or "Daily" in error_msg:
+                                    logger.warning(f"AI Agent: Model {model_name} has exhausted daily quota")
+                                    quota_exhausted = True
+                                    # Set longer cooldown for daily quota
+                                    self._set_cooldown(model_name, settings.QUOTA_EXHAUSTED_COOLDOWN, is_model=True)
+                                
                                 # Try next model with current key
                                 continue
                             else:
@@ -198,11 +326,14 @@ class AIAgent:
                                 continue
                     
                     # All models failed with current key, rotate to next key
-                    if len(self.gemini_clients) > 1:
+                    if len(self.gemini_clients) > 1 and not quota_exhausted:
                         self.gemini_key_index = (self.gemini_key_index + 1) % len(self.gemini_clients)
                         logger.warning(f"AI Agent: Rotating to Gemini API key {self.gemini_key_index + 1}")
                     else:
-                        # Only one key, can't rotate
+                        # Only one key, or quota exhausted across all models
+                        if quota_exhausted:
+                            logger.warning("AI Agent: Daily quota exhausted, setting provider cooldown")
+                            self._set_cooldown('gemini', settings.QUOTA_EXHAUSTED_COOLDOWN)
                         break
                 
                 # If all models and all keys failed, raise the last error
@@ -212,6 +343,15 @@ class AIAgent:
             raise ValueError(f"Unknown provider: {provider}")
             
         except Exception as e:
+            error_msg = str(e)
+            # Set cooldown for rate limit errors
+            if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower():
+                retry_delay = self._extract_retry_delay(error_msg)
+                self._set_cooldown(provider, retry_delay)
+            elif "credit balance" in error_msg.lower() or "billing" in error_msg.lower():
+                logger.error(f"AI Agent: {provider} has billing issues, setting long cooldown")
+                self._set_cooldown(provider, settings.BILLING_ERROR_COOLDOWN)
+            
             logger.error(f"AI Agent: Error calling {provider}: {e}", exc_info=False)
             raise
     
@@ -237,7 +377,8 @@ class AIAgent:
         persona: str = "cautious_user",
         scam_type: str = "unknown",
         extracted_intel: Dict = None,
-        message_count: int = 0
+        message_count: int = 0,
+        session_id: str = "default"
     ) -> Dict[str, any]:
         """
         Generate a human-like response to the scammer
@@ -308,7 +449,7 @@ Respond with JSON (no markdown, keep response field SHORT and casual):
         # Try each available provider until one succeeds
         if not self.available_providers:
             logger.warning("AI Agent: No LLM providers available - using fallback response")
-            return self._fallback_response(scammer_message, message_count)
+            return self._fallback_response(scammer_message, message_count, session_id)
         
         # Try primary provider first, then fallback to other available providers
         providers_to_try = []
@@ -372,7 +513,7 @@ Respond with JSON (no markdown, keep response field SHORT and casual):
         
         # All providers failed - use fallback
         logger.warning(f"AI Agent: All LLM providers failed (last error: {last_error}) - using fallback response")
-        fallback = self._fallback_response(scammer_message, message_count)
+        fallback = self._fallback_response(scammer_message, message_count, session_id)
         
         # Extra safety: ensure fallback is valid
         if not fallback or not isinstance(fallback, dict):
@@ -419,78 +560,298 @@ Respond with JSON (no markdown, keep response field SHORT and casual):
         
         return "\n".join(items) if items else "None yet"
     
-    def _fallback_response(self, scammer_message: str, message_count: int) -> Dict:
-        """Smart context-aware fallback response"""
+    def _get_unique_response(self, responses: list, session_id: str = "default") -> str:
+        """Get a response that hasn't been used recently"""
+        # Initialize history for this session if needed
+        if session_id not in self.response_history:
+            self.response_history[session_id] = []
+        
+        history = self.response_history[session_id]
+        available = [r for r in responses if r not in history[-5:]]  # Avoid last 5 responses
+        
+        if not available:
+            available = responses  # All have been used, reset
+        
+        chosen = random.choice(available)
+        
+        # Add to history
+        history.append(chosen)
+        if len(history) > self.max_history_size:
+            history.pop(0)
+        
+        return chosen
+    
+    def _fallback_response(self, scammer_message: str, message_count: int, session_id: str = "default") -> Dict:
+        """Smart context-aware fallback response with variety and progression"""
         import re
         
         message_lower = scammer_message.lower()
         
+        # Determine conversation stage for progressive responses
+        is_early = message_count < 5
+        is_mid = 5 <= message_count < 12
+        is_late = message_count >= 12
+        
         # Detect what scammer is asking for and respond contextually
         responses = []
         
-        # OTP/PIN requests - act confused
-        if any(word in message_lower for word in ['otp', 'pin', 'code', 'verification code', 'cvv']):
-            responses = [
-                "wait, what code? i didnt get any msg",
-                "otp? where do i find that?",
-                "which code ur talking about? confused"
-            ]
+        # OTP/PIN/CODE requests - Progressive confusion to fake info
+        if any(word in message_lower for word in ['otp', 'pin', 'code', 'verification', 'cvv', 'digit']):
+            if is_early:
+                responses = [
+                    "otp? where do i find that?",
+                    "wait what code? didnt recieve anything",
+                    "which code ur talking about",
+                    "code? i dont see any msg",
+                    "where shud i check for the code",
+                    "no msg came on my phone",
+                    "otp means what exactly?",
+                    "checking my messages... nothing here",
+                    "u mean password? or some other code",
+                    "confused... what kind of code"
+                ]
+            elif is_mid:
+                responses = [
+                    "ok i see some msgs now... which one is it??",
+                    "theres like 5 messages here which code do u want",
+                    "wait lemme check properly... one sec",
+                    "is it the code from 1234 number or 5678?",
+                    "my phone shows multiple codes im confused",
+                    "checking sms folder... lots of old msgs",
+                    "do u mean the code that came yesterday?",
+                    "found some numbers but not sure if thats otp",
+                    "is otp same as verification code or different?",
+                    "k checking... phone is slow tho"
+                ]
+            else:  # Late stage - give fake info or get suspicious
+                responses = [
+                    "ok i think its 123456 is that right?",
+                    "the code shows 000000 is that normal?",
+                    "it says 111111 but seems fake lol",
+                    "got 987654 from bank is that correct",
+                    "wait why do YOU need my code? cant u see it?",
+                    "my friend said never share otp with anyone",
+                    "isnt otp supposed to be private or something",
+                    "code is 567890 but idk if i shud share it",
+                    "bank msg says dont share otp... now im confused",
+                    "hold on this feels weird. y do u need my code"
+                ]
+        
+        # Account number / Personal info requests
+        elif any(word in message_lower for word in ['account number', 'account no', 'card number', 'account details', 'personal']):
+            if is_early:
+                responses = [
+                    "account number? let me check my passbook",
+                    "i dont remember it... where can i find it",
+                    "is it on the atm card or different",
+                    "give me a min to find my account number",
+                    "i have card number is that same thing?",
+                    "checking my old statements",
+                    "is account number same as customer id?"
+                ]
+            elif is_mid:
+                responses = [
+                    "ok found my card... its 16 digits right?",
+                    "the number starts with 1234 is that enough",
+                    "writing it down from passbook... bit faded",
+                    "account number is 9876543210 or something like that",
+                    "my card shows lot of numbers which one u need",
+                    "is it 10 digit or 12 digit number"
+                ]
+            else:
+                responses = [
+                    "account is 123456789012 but why u need full number",
+                    "wait shouldnt bank already have my account number??",
+                    "feels strange giving account details... u sure its safe",
+                    "my account is 9876543210123456 hope thats right",
+                    "hmm my cousin told me to never share account details"
+                ]
         
         # Payment/Money requests - show concern
-        elif any(word in message_lower for word in ['payment', 'send money', 'transfer', 'pay', 'upi', 'paytm']):
-            responses = [
-                "how much do i need to send?",
-                "what is the payment for exactly?",
-                "do i really need to pay? seems weird"
-            ]
+        elif any(word in message_lower for word in ['payment', 'send money', 'transfer', 'pay', 'upi', 'paytm', 'amount']):
+            if is_early:
+                responses = [
+                    "payment? what am i paying for",
+                    "how much money do u need?",
+                    "why do i need to pay exactly",
+                    "payment for what service?",
+                    "this is confusing... what payment",
+                    "do i really have to pay something",
+                    "how much is the amount"
+                ]
+            elif is_mid:
+                responses = [
+                    "ok so i need to pay how much exactly?",
+                    "can i pay tomorrow? dont have money rn",
+                    "is ₹100 enough or u need more",
+                    "my balance is low can i pay ₹50 only",
+                    "upi id? which id shud i send to",
+                    "paytm or gpay which one works for u"
+                ]
+            else:
+                responses = [
+                    "wait if ur from bank why am I paying u?",
+                    "this doesnt make sense... banks dont ask for payment like this",
+                    "sending ₹1 first to check if its real",
+                    "my friend said this sounds like scam now im worried",
+                    "cant i just go to bank branch instead"
+                ]
         
         # Link clicks - act cautious
-        elif any(word in message_lower for word in ['click', 'link', 'website', 'url', 'download']):
-            responses = [
-                "is this link safe? never clicked random links before",
-                "what happens if i click it?",
-                "my phone says its not secure, shud i still click?"
-            ]
+        elif any(word in message_lower for word in ['click', 'link', 'website', 'url', 'download', 'install', 'app']):
+            if is_early:
+                responses = [
+                    "link? let me see... where is it",
+                    "which link ur talking about",
+                    "ok i see a link but is it safe",
+                    "never clicked random links before",
+                    "what happens when i click it",
+                    "my phone shows warning about this link",
+                    "shud i click it on phone or computer"
+                ]
+            elif is_mid:
+                responses = [
+                    "clicked the link... its loading slow",
+                    "page is not opening properly",
+                    "it says website not secure should i continue",
+                    "link opened but asking for lots of permissions",
+                    "chrome is showing red warning is that ok",
+                    "page is in english... hard to understand"
+                ]
+            else:
+                responses = [
+                    "wait this link looks suspicious",
+                    "my antivirus blocked it saying its dangerous",
+                    "why cant u just tell me instead of sending link",
+                    "these types of links are how people get hacked no?",
+                    "googled it and people saying its fake site"
+                ]
         
         # Account/Bank issues - show worry
-        elif any(word in message_lower for word in ['account', 'bank', 'suspend', 'block', 'kyc']):
-            responses = [
-                "omg is my account really blocked?? what did i do wrong",
-                "how do i check if my account is ok?",
-                "why would they block it? i havnt done anything"
-            ]
+        elif any(word in message_lower for word in ['account', 'bank', 'suspend', 'block', 'kyc', 'locked', 'deactivate']):
+            if is_early:
+                responses = [
+                    "omg my account is blocked?? serious",
+                    "what happened to my account",
+                    "why would bank block it? i didnt do anything",
+                    "is this for real or ur joking",
+                    "how do i check if my account is ok",
+                    "when did it get blocked i just used it yesterday",
+                    "this is scary what do i do now"
+                ]
+            elif is_mid:
+                responses = [
+                    "ok ok how do i unblock it tell me fast",
+                    "what documents do u need for kyc",
+                    "is there a fine or something to pay",
+                    "how long will it take to fix this",
+                    "can i still withdraw money or everything is blocked",
+                    "will my salary credit come or that also blocked"
+                ]
+            else:
+                responses = [
+                    "but i checked internet banking and everything looks normal",
+                    "called bank customer care and they said account is fine",
+                    "u sure ur from real bank? this feels off",
+                    "my account statement is working fine tho",
+                    "banks usually send email for this... didnt get any"
+                ]
         
-        # Urgency/Threats - express concern
-        elif any(word in message_lower for word in ['urgent', 'immediate', 'now', 'expire', 'last chance']):
-            responses = [
-                "wait wait slow down, what do i need to do exactly?",
-                "ok ok im panicking now, help me fix this",
-                "how much time do i have? this is scary"
-            ]
+        # Urgency/Threats - express concern then suspicion
+        elif any(word in message_lower for word in ['urgent', 'immediate', 'now', 'hurry', 'quick', 'minutes', 'hours', 'expire', 'last chance']):
+            if is_early:
+                responses = [
+                    "omg so urgent?? what should i do",
+                    "ok ok dont panic me... tell me what to do",
+                    "how much time do i have exactly",
+                    "wait slow down im getting confused",
+                    "this is making me nervous",
+                    "cant breathe... too much pressure"
+                ]
+            elif is_mid:
+                responses = [
+                    "trying my best but ur going too fast",
+                    "give me a minute to think properly",
+                    "rushing me is making it harder to understand",
+                    "can u extend the time a bit",
+                    "let me call my son and ask him"
+                ]
+            else:
+                responses = [
+                    "wait why so much hurry... sounds fishy",
+                    "real bank gives more time than this",
+                    "this urgency tactic feels like those scam messages",
+                    "my daughter works in bank she said this is not how banks work",
+                    "if its that urgent why not call me officially"
+                ]
         
         # Prize/Lottery - act excited but confused
-        elif any(word in message_lower for word in ['won', 'prize', 'winner', 'lottery', 'congratulations']):
-            responses = [
-                "omg really?? how did i win? didnt even participate",
-                "wow thats amazing! what do i need to do to get it?",
-                "are u sure its me? sounds too good"
-            ]
+        elif any(word in message_lower for word in ['won', 'prize', 'winner', 'lottery', 'congratulations', 'selected', 'lucky']):
+            if is_early:
+                responses = [
+                    "omg really?? i won something",
+                    "wow this is amazing! what did i win",
+                    "how did i win? didnt even participate",
+                    "are u sure its me not someone else",
+                    "whats the prize amount",
+                    "this sounds too good to be true"
+                ]
+            elif is_mid:
+                responses = [
+                    "ok so what do i need to do to claim it",
+                    "when will i get the prize money",
+                    "is there any tax or fees to pay first",
+                    "do i need to come to office or online process",
+                    "how did u get my number for this"
+                ]
+            else:
+                responses = [
+                    "wait why do i have to pay to get my prize??",
+                    "my son said lotteries dont ask for payment beforehand",
+                    "this is feeling like those fake lottery scams",
+                    "if i won why am i paying u... that makes no sense",
+                    "googled this and its showing scam warning"
+                ]
         
-        # Generic fallback responses
+        # Generic fallback responses with variety
         else:
-            responses = [
-                "i dont understand, can u explain more?",
-                "what do u mean exactly?",
-                "sorry im confused, say that again?",
-                "ok but how do i do that?",
-                "wait what?? ur going too fast"
-            ]
+            if is_early:
+                responses = [
+                    "what do u mean exactly",
+                    "i dont understand can u explain",
+                    "confused... say that again",
+                    "sorry didnt get that",
+                    "can u explain in simple words",
+                    "not sure what ur asking",
+                    "wait what are u trying to say"
+                ]
+            elif is_mid:
+                responses = [
+                    "ok im trying to understand but its confusing",
+                    "can u break it down step by step",
+                    "ur explanation is too technical for me",
+                    "im not good with these things sorry",
+                    "let me ask someone who knows better",
+                    "give me a minute to process this"
+                ]
+            else:
+                responses = [
+                    "this is getting too complicated",
+                    "ive been trying to understand but still confused",
+                    "maybe i should just go to bank tomorrow",
+                    "this conversation is going nowhere",
+                    "i think there is some miscommunication",
+                    "let me talk to bank directly instead"
+                ]
+        
+        # Get unique response from the pool
+        chosen_response = self._get_unique_response(responses, session_id)
         
         return {
-            'response': random.choice(responses),
+            'response': chosen_response,
             'strategy': 'context_aware_fallback',
             'should_continue': message_count < 20,
-            'notes': f'Fallback response to: {message_lower[:50]}'
+            'notes': f'Fallback response (stage: {"early" if is_early else "mid" if is_mid else "late"}) to: {message_lower[:50]}'
         }
     
     def should_end_conversation(

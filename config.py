@@ -60,6 +60,14 @@ class Settings(BaseSettings):
     LLM_TEMPERATURE_RESPONSE: float = 0.7
     LLM_REQUEST_TIMEOUT: int = 5  # Reduced timeout for faster failures
     
+    # Rate Limiting Configuration
+    FAST_MODE: bool = True  # Set to True for testing/GUVI (bypasses throttling), False for production
+    MIN_REQUEST_INTERVAL: float = 12.0  # Minimum seconds between requests (5 req/min) - ignored in FAST_MODE
+    DEFAULT_RETRY_DELAY: float = 60.0  # Default cooldown when retry delay not provided
+    QUOTA_EXHAUSTED_COOLDOWN: int = 3600  # Cooldown for daily quota exhaustion (1 hour)
+    BILLING_ERROR_COOLDOWN: int = 7200  # Cooldown for billing issues (2 hours)
+    FAST_MODE_MAX_RETRY_ATTEMPTS: int = 1  # Only try 1 model in fast mode (vs 6 normally)
+    
     # Detection Configuration (Dynamic Thresholds)
     SCAM_DETECTION_THRESHOLD: float = 0.5  # Minimum confidence to consider as scam
     SCAM_SCORE_THRESHOLD: int = 2  # Minimum total score for scam detection

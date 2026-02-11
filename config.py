@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables"""
     
     # API Configuration
-    API_KEY: str
+    API_KEY: str = "CHANGE_ME_IN_PRODUCTION"  # Required: Set in environment
     PORT: int = 8000
     HOST: str = "0.0.0.0"
     
@@ -61,12 +61,13 @@ class Settings(BaseSettings):
     LLM_REQUEST_TIMEOUT: int = 5  # Reduced timeout for faster failures
     
     # Rate Limiting Configuration
-    FAST_MODE: bool = True  # Set to True for testing/GUVI (bypasses throttling), False for production
+    FAST_MODE: bool = False  # False = Throttling enabled (production-safe) + Fast fallbacks
     MIN_REQUEST_INTERVAL: float = 12.0  # Minimum seconds between requests (5 req/min) - ignored in FAST_MODE
     DEFAULT_RETRY_DELAY: float = 60.0  # Default cooldown when retry delay not provided
     QUOTA_EXHAUSTED_COOLDOWN: int = 3600  # Cooldown for daily quota exhaustion (1 hour)
     BILLING_ERROR_COOLDOWN: int = 7200  # Cooldown for billing issues (2 hours)
     FAST_MODE_MAX_RETRY_ATTEMPTS: int = 1  # Only try 1 model in fast mode (vs 6 normally)
+    USE_INSTANT_FALLBACK: bool = True  # Use instant fallback when providers in cooldown (best of both worlds)
     
     # Detection Configuration (Dynamic Thresholds)
     SCAM_DETECTION_THRESHOLD: float = 0.5  # Minimum confidence to consider as scam

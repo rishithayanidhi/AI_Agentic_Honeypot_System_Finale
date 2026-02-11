@@ -112,11 +112,16 @@ class AIAgent:
         else:
             logger.info(f"✅ AI Agent: Available providers: {', '.join(self.available_providers)}")
         
-        # Log FAST_MODE status
+        # Log mode configuration
         if settings.FAST_MODE:
             logger.info("⚡ AI Agent: FAST_MODE enabled - bypassing throttling and cooldowns for instant responses")
         else:
-            logger.info(f"🐢 AI Agent: Production mode - rate limiting enabled ({settings.MIN_REQUEST_INTERVAL}s between requests)")
+            if settings.USE_INSTANT_FALLBACK:
+                logger.info("🎯 AI Agent: HYBRID MODE - Rate limiting enabled + Instant fallbacks when in cooldown")
+                logger.info(f"   • Throttling: {settings.MIN_REQUEST_INTERVAL}s between API calls")
+                logger.info(f"   • Instant fallback when providers in cooldown (best of both worlds!)")
+            else:
+                logger.info(f"🐢 AI Agent: Production mode - rate limiting enabled ({settings.MIN_REQUEST_INTERVAL}s between requests)")
     
     def _extract_retry_delay(self, error_msg: str) -> float:
         """Extract retry delay from error message (e.g., 'Please retry in 18.360292146s')"""
@@ -459,6 +464,13 @@ Respond with JSON (no markdown, keep response field SHORT and casual):
         for p in self.available_providers:
             if p not in providers_to_try:
                 providers_to_try.append(p)
+        
+        # INSTANT FALLBACK: Skip API calls if all providers in cooldown (best of both worlds!)
+        if settings.USE_INSTANT_FALLBACK:
+            available_now = [p for p in providers_to_try if not self._is_provider_in_cooldown(p)]
+            if not available_now:
+                logger.info("AI Agent: All providers in cooldown - using instant fallback (⚡ fast + 🛡️ rate-limited)")
+                return self._fallback_response(scammer_message, message_count, session_id)
         
         last_error = None
         for provider in providers_to_try:

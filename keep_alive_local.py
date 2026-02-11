@@ -9,7 +9,7 @@ from datetime import datetime
 import sys
 
 # CONFIGURE THIS
-SERVICE_URL = "https://your-app-name.onrender.com"  # Replace with your Render URL
+SERVICE_URL = "https://ai-agentic-honeypot-system-finale.onrender.com"  # Replace with your Render URL
 HEALTH_ENDPOINT = "/health"
 PING_INTERVAL = 300  # 5 minutes (in seconds)
 

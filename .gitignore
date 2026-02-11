@@ -163,3 +163,75 @@ dmypy.json
 
 # Cython
 cython_debug/
+
+# ===================================
+# Project-Specific Ignores
+# ===================================
+
+# Session Data & Cache
+sessions/
+session_data/
+*.session
+cache/
+
+# Local Test Files
+test_local.py
+test_personal.py
+*_local_test.py
+quick_test_*.py
+
+# Deployment Local Configs
+railway.json
+.railway/
+render.json
+deployment_config.local.json
+
+# Local Keep-Alive Scripts (if customized with real URLs)
+keep_alive_configured.py
+keep_alive_configured.ps1
+my_keep_alive.*
+
+# API Response Logs
+api_responses/
+response_logs/
+intelligence_data/
+
+# Local Documentation Builds
+docs/build/
+*.pdf
+*.docx
+
+# Temporary Upload/Download
+uploads/
+downloads/
+temp_files/
+
+# Performance Test Results
+performance_results/
+benchmark_results/
+*.benchmark
+
+# Local Database Files (if any)
+*.db
+*.sqlite
+*.sqlite3
+local.db
+test.db
+
+# Redis Dumps (if local Redis used)
+dump.rdb
+*.rdb
+
+# LLM API Debug Logs
+llm_debug/
+gemini_logs/
+anthropic_logs/
+openai_logs/
+
+# GUVI Test Results (local)
+guvi_test_results/
+evaluation_logs/
+
+# Render/Railway Build Artifacts
+.render/
+.railway/

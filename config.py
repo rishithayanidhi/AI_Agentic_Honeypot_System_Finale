@@ -1,4 +1,5 @@
 from typing import Optional, List
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):

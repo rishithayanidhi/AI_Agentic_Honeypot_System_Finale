@@ -22,6 +22,7 @@ from src.services.scam_detector import ScamDetector
 from src.services.ai_agent import AIAgent
 from src.utils.intelligence_extractor import IntelligenceExtractor
 from src.services.guvi_callback import guvi_callback
+from src.services.intent_drift_analyzer import intent_drift_analyzer
 
 # Configure logging for Render (explicit stdout)
 logging.basicConfig(
@@ -390,6 +391,46 @@ async def handle_message(
             # Keep engagement active for multi-turn conversations
             session.engagement_active = True
         
+        # === INTENT DRIFT TRACKING (New Feature) ===
+        # Track intent and detect drift without changing existing logic
+        try:
+            # Track current intent
+            intent_record = intent_drift_analyzer.track_intent(
+                intent=scam_type,
+                confidence=scam_confidence,
+                message_number=session.message_count,
+                reasoning=detection_result.get('reasoning', '')
+            )
+            
+            # Detect drift if previous intent exists
+            drift_event = None
+            if session.current_intent and session.current_intent != scam_type:
+                drift_event = intent_drift_analyzer.detect_drift(
+                    current_intent=scam_type,
+                    current_confidence=scam_confidence,
+                    previous_intent=session.current_intent,
+                    message_number=session.message_count
+                )
+            
+            # Update session with new intent
+            session.intent_history.append(intent_record)
+            session.current_intent = scam_type
+            
+            # Perform full drift analysis
+            session.drift_analysis = intent_drift_analyzer.analyze_drift_pattern(session.intent_history)
+            
+            # Log drift insights
+            if drift_event:
+                logger.warning(f"⚠️ Intent Drift: {drift_event.from_intent} → {drift_event.to_intent} (magnitude: {drift_event.drift_magnitude})")
+            
+            if session.drift_analysis:
+                logger.info(f"📊 Drift Analysis: {session.drift_analysis.total_drifts} drifts, behavior: {session.drift_analysis.behavior_type.value}")
+                
+        except Exception as drift_error:
+            logger.error(f"Intent drift tracking error: {drift_error}")
+            # Don't fail the request if drift tracking fails
+        # === END INTENT DRIFT TRACKING ===
+        
         # Generate agent response if scam is detected
         agent_response_text = None
         session_complete = False
@@ -569,7 +610,13 @@ async def get_session_info(
         "engagementActive": session.engagement_active,
         "intelligence": session.intelligence.model_dump(),
         "createdAt": session.created_at.isoformat(),
-        "lastActivity": session.last_activity.isoformat()
+        "lastActivity": session.last_activity.isoformat(),
+        "currentIntent": session.current_intent,
+        "driftAnalysisSummary": {
+            "totalDrifts": session.drift_analysis.total_drifts if session.drift_analysis else 0,
+            "behaviorType": session.drift_analysis.behavior_type.value if session.drift_analysis else "unknown",
+            "stabilityScore": session.drift_analysis.stability_score if session.drift_analysis else 1.0
+        } if session.drift_analysis else None
     }
 
 
@@ -666,6 +713,46 @@ async def get_detailed_intelligence(
                 intel.bankAccountsDetailed + intel.upiIdsDetailed + 
                 intel.phishingLinksDetailed + intel.phoneNumbersDetailed
             ) if item.confidence < 0.5)
+        }
+    }
+
+
+@app.get("/api/session/{session_id}/drift")
+async def get_drift_analysis(
+    session_id: str,
+    api_key: str = Depends(verify_api_key)
+):
+    """Get intent drift analysis for a session"""
+    session = session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    if not session.drift_analysis:
+        return {
+            "sessionId": session_id,
+            "message": "No drift analysis available yet",
+            "intentHistory": []
+        }
+    
+    return {
+        "sessionId": session_id,
+        "driftAnalysis": intent_drift_analyzer.get_drift_summary(session.drift_analysis),
+        "intentHistory": [
+            {
+                "intent": record.intent,
+                "confidence": round(record.confidence, 3),
+                "messageNumber": record.message_number,
+                "timestamp": record.timestamp,
+                "reasoning": record.reasoning
+            }
+            for record in session.intent_history
+        ],
+        "currentIntent": session.current_intent,
+        "behaviorInsights": {
+            "behaviorType": session.drift_analysis.behavior_type.value,
+            "interpretation": session.drift_analysis.interpretation,
+            "stabilityScore": session.drift_analysis.stability_score,
+            "intentDiversity": session.drift_analysis.intent_diversity
         }
     }
 

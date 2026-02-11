@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
-from typing import List, Dict
+from typing import List, Dict, Optional
 from datetime import datetime
-from src.models.schemas import Message, ExtractedIntelligence
+from src.models.schemas import Message, ExtractedIntelligence, IntentRecord, IntentDriftAnalysis
 
 
 @dataclass
@@ -18,6 +18,11 @@ class SessionData:
     engagement_active: bool = False
     persona: str = "cautious_user"  # The persona the agent is currently using
     
+    # Intent Drift Tracking fields (new)
+    intent_history: List[IntentRecord] = field(default_factory=list)
+    current_intent: Optional[str] = None
+    drift_analysis: Optional[IntentDriftAnalysis] = None
+    
     def to_dict(self) -> Dict:
         """Convert to dictionary for storage"""
         return {
@@ -30,5 +35,8 @@ class SessionData:
             "last_activity": self.last_activity.isoformat(),
             "message_count": self.message_count,
             "engagement_active": self.engagement_active,
-            "persona": self.persona
+            "persona": self.persona,
+            "intent_history": [ir.model_dump() for ir in self.intent_history],
+            "current_intent": self.current_intent,
+            "drift_analysis": self.drift_analysis.model_dump() if self.drift_analysis else None
         }

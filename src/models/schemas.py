@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Dict, Any, Union
 from datetime import datetime
+from enum import Enum
 
 
 class Message(BaseModel):
@@ -131,6 +132,54 @@ class APIResponse(BaseModel):
     extractedIntelligence: Optional[ExtractedIntelligence] = None
     agentNotes: Optional[str] = None
     sessionComplete: bool = False  # Whether the conversation has ended
+
+
+class IntentRecord(BaseModel):
+    """Records a detected intent at a point in time"""
+    intent: str  # scam_type: bank_fraud, upi_fraud, phishing, fake_offer, etc.
+    confidence: float = Field(ge=0.0, le=1.0)
+    timestamp: str
+    message_number: int
+    reasoning: Optional[str] = None
+
+
+class DriftEvent(BaseModel):
+    """Records an intent drift occurrence"""
+    from_intent: str
+    to_intent: str
+    timestamp: str
+    message_number: int
+    drift_magnitude: str  # "low", "medium", "high"
+    drift_score: float = Field(ge=0.0, le=1.0, default=0.5)
+
+
+class DriftMagnitude(str, Enum):
+    """Intent drift magnitude levels"""
+    NONE = "none"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class ScammerBehaviorType(str, Enum):
+    """Scammer behavioral classification"""
+    PROFESSIONAL_FOCUSED = "professional_focused"
+    AMATEUR_DESPERATE = "amateur_desperate"
+    ADAPTIVE_TESTING = "adaptive_testing"
+    UNKNOWN = "unknown"
+
+
+class IntentDriftAnalysis(BaseModel):
+    """Complete intent drift analysis for a session"""
+    total_drifts: int = 0
+    drift_rate: float = Field(ge=0.0, le=1.0, default=0.0)  # Drifts per message
+    intent_diversity: int = 0  # Number of unique intents
+    stability_score: float = Field(ge=0.0, le=1.0, default=1.0)  # 1 - drift_rate
+    primary_intent: Optional[str] = None  # Most frequent intent
+    drift_events: List[DriftEvent] = Field(default_factory=list)
+    intent_timeline: List[IntentRecord] = Field(default_factory=list)
+    behavior_type: ScammerBehaviorType = ScammerBehaviorType.UNKNOWN
+    interpretation: Optional[str] = None
 
 
 class GUVICallbackPayload(BaseModel):

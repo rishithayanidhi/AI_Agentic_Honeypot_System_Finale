@@ -1,0 +1,82 @@
+from typing import Optional, List
+
+
+class Settings(BaseSettings):
+    """Application settings loaded from environment variables"""
+    
+    # API Configuration
+    API_KEY: str
+    PORT: int = 8000
+    HOST: str = "0.0.0.0"
+    
+    # LLM Configuration
+    LLM_PROVIDER: str = "anthropic"  # openai, anthropic, or gemini
+    
+    # Gemini Configuration - Support multiple API keys
+    GOOGLE_API_KEY: Optional[str] = None  # Primary key
+    GOOGLE_API_KEY_2: Optional[str] = None  # Additional keys for rotation
+    GOOGLE_API_KEY_3: Optional[str] = None
+    GOOGLE_API_KEY_4: Optional[str] = None
+    GEMINI_MODEL: str = "gemini-pro"
+    
+    def get_gemini_api_keys(self) -> List[str]:
+        keys = []
+        for key in [self.GOOGLE_API_KEY, self.GOOGLE_API_KEY_2, 
+                    self.GOOGLE_API_KEY_3, self.GOOGLE_API_KEY_4]:
+            if key and key != "your-google-api-key-here":
+                keys.append(key)
+        return keys
+    
+    # OpenAI Configuration
+    OPENAI_API_KEY: Optional[str] = None
+    OPENAI_MODEL: str = "gpt-4-turbo-preview"
+    
+    # Anthropic Configuration (Claude Haiku 4.5)
+    ANTHROPIC_API_KEY: Optional[str] = None
+    ANTHROPIC_MODEL: str = "claude-haiku-4.5-20250110"
+    
+    # GUVI Configuration
+    GUVI_CALLBACK_URL: str = "https://hackathon.guvi.in/api/updateHoneyPotFinalResult"
+    
+    # Response Configuration
+    INCLUDE_DEBUG_INFO: bool = False  # Set to True to include detailed debug fields in response
+    
+    # Session Configuration
+    SESSION_TIMEOUT_MINUTES: int = 30
+    MAX_MESSAGES_PER_SESSION: int = 50
+    
+    # Redis Configuration (Optional)
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
+    REDIS_DB: int = 0
+    USE_REDIS: bool = False
+    
+    # Performance Configuration (OPTIMIZED FOR SPEED)
+    CACHE_MAX_SIZE: int = 500  # Increased cache for more hits
+    LLM_MAX_TOKENS_DETECTION: int = 1500  # Increased to prevent truncation
+    LLM_MAX_TOKENS_RESPONSE: int = 2000   # Increased to prevent truncation
+    LLM_TEMPERATURE_DETECTION: float = 0.1
+    LLM_TEMPERATURE_RESPONSE: float = 0.7
+    LLM_REQUEST_TIMEOUT: int = 5  # Reduced timeout for faster failures
+    
+    # Detection Configuration (Dynamic Thresholds)
+    SCAM_DETECTION_THRESHOLD: float = 0.5  # Minimum confidence to consider as scam
+    SCAM_SCORE_THRESHOLD: int = 2  # Minimum total score for scam detection
+    LOTTERY_CONFIDENCE_MULTIPLIER: float = 0.3
+    BANK_FRAUD_CONFIDENCE_MULTIPLIER: float = 0.25
+    UPI_CONFIDENCE_MULTIPLIER: float = 0.3
+    PHISHING_CONFIDENCE_MULTIPLIER: float = 0.35
+    GENERIC_CONFIDENCE_MULTIPLIER: float = 0.25
+    MAX_CONFIDENCE: float = 0.95
+    MIN_CONFIDENCE_NOT_SCAM: float = 0.4
+    
+    # Conversation Configuration
+    PERSONA_CHANGE_INTERVAL: int = 5  # Change persona every N messages
+    EARLY_STAGE_THRESHOLD: int = 3  # Messages before mid-conversation
+    
+    class Config:
+        env_file = ".env"
+        case_sensitive = True
+
+
+settings = Settings()

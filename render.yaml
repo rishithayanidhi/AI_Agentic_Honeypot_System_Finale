@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: ai-agentic-honeypot-system
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.1
+      - key: LLM_PROVIDER
+        value: anthropic
+      - key: ANTHROPIC_MODEL
+        value: claude-haiku-4.5-20250110
+      - key: LLM_MAX_TOKENS_DETECTION
+        value: 500
+      - key: LLM_MAX_TOKENS_RESPONSE
+        value: 300
+      - key: GEMINI_MODEL
+        value: models/gemini-2.5-flash
+      - key: CACHE_MAX_SIZE
+        value: 500
+      - key: LLM_REQUEST_TIMEOUT
+        value: 5
+      - key: SESSION_TIMEOUT_MINUTES
+        value: 30
+      - key: MAX_MESSAGES_PER_SESSION
+        value: 50
+      - key: SCAM_SCORE_THRESHOLD
+        value: 2

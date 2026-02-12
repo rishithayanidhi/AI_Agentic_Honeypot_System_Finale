@@ -67,6 +67,10 @@ class AIAgent:
         self.request_counts = {}  # Track requests per minute
         self.min_request_interval = settings.MIN_REQUEST_INTERVAL  # Minimum seconds between requests
         
+        # Track recent responses to avoid repetition
+        self.recent_responses = []  # Store last 5 responses
+        self.max_recent_responses = 5
+        
         # Initialize all available providers dynamically
         self._initialize_providers()
     
@@ -375,6 +379,11 @@ class AIAgent:
         # Get persona details
         persona_info = self.PERSONAS.get(persona, self.PERSONAS["cautious_user"])
         
+        # Build recent responses context to avoid repetition
+        recent_context = ""
+        if self.recent_responses:
+            recent_context = "\nRECENT RESPONSES YOU USED (DON'T REPEAT THESE):\n" + "\n".join(f"- {r}" for r in self.recent_responses[-3:])
+        
         # Build the prompt for the AI
         prompt = f"""You are a REAL PERSON chatting with someone. You don't know you're talking to a scammer.
 
@@ -383,36 +392,46 @@ Traits: {persona_info['traits']}
 
 CONVERSATION SO FAR:
 {context}
+{recent_context}
 
 LATEST MESSAGE FROM THEM:
 "{scammer_message}"
 
 CRITICAL RULES FOR REALISM:
-1. Keep responses SHORT (1-3 sentences max, sometimes just 1!)
+1. Keep responses SHORT (1-3 sentences max, often just 5-15 words!)
 2. Use casual WhatsApp/SMS style - lowercase, no perfect grammar
-3. Make natural typos: teh→the, recieve→receive, dont→don't, plz, u, ur
-4. Show raw emotions with: "oh no!", "really??", "wait what", punctuation!!!
-5. Don't over-explain or sound articulate - be a bit scattered
-6. Ask 1 simple question at a time, not multiple
-7. Sometimes respond with JUST emotion: "😰", "omg", "wait"
-8. Never use formal language or perfect structure
-9. Real people don't explain their thought process
-10. Be reactive, not analytical
+3. Make natural typos: teh→the, recieve→receive, dont→don't, plz, u, ur, wat, shud
+4. Show raw emotions: "oh no!", "really??", "wait what", "omg", "😰"
+5. Be scattered and confused - don't over-explain anything
+6. Ask 1 simple question, not multiple analytical questions
+7. Sometimes respond with JUST emotion or confusion
+8. NEVER USE: "Could you", "I understand", "I appreciate", formal words
+9. React to SPECIFIC WORDS they used - if they mention "OTP", "phone number", "account", SAY THOSE WORDS BACK
+10. Vary your response structure - don't always follow same pattern
 
-BAD (too articulate): "I'm concerned about this situation. Could you please clarify what specific issue exists with my account? I want to understand the nature of this problem before proceeding."
+ANALYZE THEIR MESSAGE:
+- What specific thing are they asking for? (OTP? account number? click link?)
+- Did they mention any numbers, phone, time limit? Reference those!
+- What's the urgency level? Show appropriate panic/confusion
 
-GOOD (natural): "wait my account has problem?? what kind of problem?? i just checked yesterday everythng was fine"
+BAD (robotic repetition): "which code ur talking about? confused"
+GOOD (specific reaction): "wait u sent otp where? didnt get anything on 9876"
 
-GOOD (with typo): "oh no is it serious? what shud i do"
+BAD (too formal): "Could you clarify what specific code you're referring to?"
+GOOD (real person): "huh what code i dont see any msgs"
 
-GOOD (brief emotion): "really?? thats scary"
+BAD (same every time): "what do you mean"
+GOOD (varied): "not getting it explain again" OR "wat??" OR "dont understand this"
 
-YOUR GOAL: Sound like a real worried person texting, NOT like customer service or formal writing.
+VARY YOUR CONFUSION:
+- "huh?", "wat", "dont get it", "explain more", "not clear", "confused here"
+- Reference THEIR specific words: if they say "OTP sent to +91-XX" → "which number u sent to"
+- Mix lengths: Sometimes 3 words ("wat u mean"), sometimes 15 ("ok so ur saying my account will close if i dont send code right")
 
-Respond with JSON (no markdown, keep response field SHORT and casual):
+Respond with JSON (no markdown):
 {{
-  "response": "short casual response with maybe a typo",
-  "strategy": "brief note",
+  "response": "natural short casual reply",
+  "strategy": "note",
   "should_continue": true/false,
   "notes": "quick observation"
 }}"""
@@ -469,6 +488,12 @@ Respond with JSON (no markdown, keep response field SHORT and casual):
                 if 'response' not in agent_decision:
                     logger.error(f"AI Agent: Response missing 'response' field")
                     agent_decision['response'] = "I'm not sure what you mean. Can you explain?"
+                
+                # Track successful response to avoid repetition
+                response_text = agent_decision.get('response', '')
+                self.recent_responses.append(response_text)
+                if len(self.recent_responses) > self.max_recent_responses:
+                    self.recent_responses.pop(0)
                 
                 logger.info(f"AI Agent: Successfully generated response with {provider}")
                 return agent_decision
@@ -532,74 +557,136 @@ Respond with JSON (no markdown, keep response field SHORT and casual):
         return "\n".join(items) if items else "None yet"
     
     def _fallback_response(self, scammer_message: str, message_count: int) -> Dict:
-        """Smart context-aware fallback response"""
+        """Smart context-aware fallback response with variety and natural language"""
         import re
         
         message_lower = scammer_message.lower()
         
-        # Detect what scammer is asking for and respond contextually
+        # Extract specific details from scammer message for natural responses
+        phone_match = re.search(r'\+?\d{2}[-\s]?\d{10}|\d{10}', scammer_message)
+        number_match = re.search(r'\d{6}|\d{16}|\d{4}', scammer_message)
+        account_match = re.search(r'\d{16}|\d{12}', scammer_message)
+        time_match = re.search(r'(\d+)\s*(minute|second|hour)', message_lower)
+        
+        # Build varied response pools with natural variations
         responses = []
         
-        # OTP/PIN requests - act confused
-        if any(word in message_lower for word in ['otp', 'pin', 'code', 'verification code', 'cvv']):
+        # OTP/PIN requests - act confused about what/where/how
+        if any(word in message_lower for word in ['otp', 'pin', 'code', 'verification', 'cvv', '6-digit', '6‑digit']):
             responses = [
-                "wait, what code? i didnt get any msg",
-                "otp? where do i find that?",
-                "which code ur talking about? confused"
+                "what code?? i didnt get anything" + (" on my phone" if phone_match else ""),
+                "otp means what exactly? never heard this before",
+                "where shud i look for this code? in my msgs?",
+                "u mean password? or something else",
+                "i checked my phone no new messages came",
+                "code for what purpose exactly?",
+                "how do i find that? is it in app or sms",
+                "which otp r u asking? confused here"
             ]
         
-        # Payment/Money requests - show concern
-        elif any(word in message_lower for word in ['payment', 'send money', 'transfer', 'pay', 'upi', 'paytm']):
+        # Payment/Money requests - vary concern levels
+        elif any(word in message_lower for word in ['payment', 'send money', 'transfer', 'pay', 'amount', 'rupees']):
             responses = [
-                "how much do i need to send?",
-                "what is the payment for exactly?",
-                "do i really need to pay? seems weird"
+                "how much??  dont have much money rn",
+                "what am i paying for again? need to understand first",
+                "is this payment necessary? sounds fishy",
+                "where do i send it exactly",
+                "never done this before what steps to follow",
+                "will i get refund later or one time thing?"
             ]
         
-        # Link clicks - act cautious
-        elif any(word in message_lower for word in ['click', 'link', 'website', 'url', 'download']):
+        # Link clicks - show hesitation
+        elif any(word in message_lower for word in ['click', 'link', 'website', 'url', 'download', 'open']):
             responses = [
-                "is this link safe? never clicked random links before",
-                "what happens if i click it?",
-                "my phone says its not secure, shud i still click?"
+                "link? my phone showing security warning",
+                "not sure if i shud click dont want virus",
+                "what will happen if i open it",
+                "is it safe link or scam? how do i know",
+                "cant open it says risk website"
             ]
         
-        # Account/Bank issues - show worry
-        elif any(word in message_lower for word in ['account', 'bank', 'suspend', 'block', 'kyc']):
+        # Account/Bank issues - react to specific bank mentioned
+        elif any(word in message_lower for word in ['account', 'blocked', 'suspend', 'freeze', 'kyc', 'sbi', 'bank']):
+            bank_name = "account"
+            if 'sbi' in message_lower:
+                bank_name = "sbi account"
+            elif 'hdfc' in message_lower:
+                bank_name = "hdfc"
+            elif 'icici' in message_lower:
+                bank_name = "icici"
+            
             responses = [
-                "omg is my account really blocked?? what did i do wrong",
-                "how do i check if my account is ok?",
-                "why would they block it? i havnt done anything"
+                f"wait my {bank_name} has problem?? what happened",
+                "why would it get blocked i didnt do anything wrong",
+                "can i check my balance is everything still there",
+                "this is serious right? shud i go to branch",
+                "how to fix this issue tell me steps"
             ]
         
-        # Urgency/Threats - express concern
-        elif any(word in message_lower for word in ['urgent', 'immediate', 'now', 'expire', 'last chance']):
+        # Time pressure - acknowledge and show panic based on time mentioned
+        elif any(word in message_lower for word in ['urgent', 'immediate', 'now', 'minute', 'second', 'expire', 'soon']):
+            time_ref = f" {time_match.group(0)}" if time_match else ""
             responses = [
-                "wait wait slow down, what do i need to do exactly?",
-                "ok ok im panicking now, help me fix this",
-                "how much time do i have? this is scary"
+                f"ok ok{time_ref} is not much time right? what exactly i need do",
+                "dont panic me im trying to understand first",
+                "this urgent thing making me scared what if i mess up",
+                "slow down! explain step by step plz",
+                "only" + time_ref + "?? thats too less how can i do fast"
             ]
         
-        # Prize/Lottery - act excited but confused
-        elif any(word in message_lower for word in ['won', 'prize', 'winner', 'lottery', 'congratulations']):
+        # Phone number mentioned - acknowledge it
+        elif phone_match:
+            phone = phone_match.group(0)
             responses = [
-                "omg really?? how did i win? didnt even participate",
-                "wow thats amazing! what do i need to do to get it?",
-                "are u sure its me? sounds too good"
+                f"is {phone} my number? how u know my number",
+                f"that number yours or mine unclear",
+                f"i shud call {phone}? or wait for call"
             ]
         
-        # Generic fallback responses
+        # Account number mentioned - verify it
+        elif account_match:
+            acc = account_match.group(0)
+            responses = [
+                f"is {acc[:4]}***{acc[-4:]} my account number? need to check",
+                "how did u get my account details",
+                "is this number correct let me verify first"
+            ]
+        
+        # Prize/Lottery - excited confusion
+        elif any(word in message_lower for word in ['won', 'prize', 'winner', 'lottery', 'congratulations', 'reward']):
+            responses = [
+                "really?? but i never entered any lottery",
+                "wow!! how much i won? is it real",
+                "sounds amazing but how u got my details",
+                "what i need to do to claim it tell me"
+            ]
+        
+        # Generic - natural confusion with variations
         else:
             responses = [
-                "i dont understand, can u explain more?",
-                "what do u mean exactly?",
-                "sorry im confused, say that again?",
-                "ok but how do i do that?",
-                "wait what?? ur going too fast"
+                "huh? didnt get what u said",
+                "can u say that in simple way",
+                "little confused explain again",
+                "what exactly u want me to do unclear",
+                "sorry not understanding this properly",
+                "ok but how? need more details",
+                "wait ur going too fast slow down"
             ]
         
+        # Filter out recently used responses to avoid repetition
+        available_responses = [r for r in responses if r not in self.recent_responses]
+        if not available_responses:
+            available_responses = responses  # Reset if all used
+        
+        selected_response = random.choice(available_responses)
+        
+        # Track this response
+        self.recent_responses.append(selected_response)
+        if len(self.recent_responses) > self.max_recent_responses:
+            self.recent_responses.pop(0)
+        
         return {
-            'response': random.choice(responses),
+            'response': selected_response,
             'strategy': 'context_aware_fallback',
             'should_continue': message_count < 20,
             'notes': f'Fallback response to: {message_lower[:50]}'

@@ -302,8 +302,18 @@ async def handle_message(
         # Add conversation history to session if this is first message (only if list is small)
         if conversation_history and not session.engagement_active and len(conversation_history) < 10:
             for hist_msg in conversation_history:
-                if hist_msg not in session.messages:
-                    session.messages.insert(0, hist_msg)
+                # Convert dict to Message object if needed
+                if isinstance(hist_msg, dict):
+                    hist_msg_obj = Message(
+                        sender=hist_msg.get("sender", "scammer"),
+                        text=hist_msg.get("text", ""),
+                        timestamp=hist_msg.get("timestamp") or datetime.now().isoformat()
+                    )
+                else:
+                    hist_msg_obj = hist_msg
+                
+                if hist_msg_obj not in session.messages:
+                    session.messages.insert(0, hist_msg_obj)
         
         # Initialize detection variables
         detection_result = {}
